@@ -42,8 +42,9 @@ function Get-CIPPAuditLogContentBundles {
         $DefaultDomainName = (Get-Tenants | Where-Object { $_.customerId -eq $TenantFilter }).defaultDomainName
     }
 
-    $WebhookTable = Get-CippTable -TableName 'webhookTable'
+    $WebhookTable = Get-CippTable -tablename 'webhookTable'
     $WebhookConfig = Get-CIPPAzDataTableEntity @WebhookTable -Filter "PartitionKey eq '$DefaultDomainName' and Version eq '3' and Resource eq '$ContentType'"
+
     if (!$WebhookConfig) {
         throw "No webhook config found for $DefaultDomainName - $ContentType"
     }
@@ -54,8 +55,8 @@ function Get-CIPPAuditLogContentBundles {
     }
 
     if (!$ShowAll.IsPresent) {
-        if ($WebhookConfig.LastContentCreated) {
-            $StartTime = $WebhookConfig.LastContentCreated.DateTime.ToLocalTime()
+        if (!$StartTime) {
+            $StartTime = (Get-Date).AddMinutes(-30)
             $EndTime = Get-Date
         }
     }
@@ -65,10 +66,12 @@ function Get-CIPPAuditLogContentBundles {
         if ($EndTime) {
             $Parameters.Add('endTime', $EndTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss'))
         } else {
-            $Parameters.Add('endTime', (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss'))
+            $Parameters.Add('endTime', ($StartTime).AddHours(24).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss'))
         }
     }
 
+    Write-Information "StartTime: $StartTime"
+    Write-Information "EndTime: $EndTime"
     $GraphQuery = [System.UriBuilder]('https://manage.office.com/api/v1.0/{0}/activity/feed/subscriptions/content' -f $TenantFilter)
     $ParamCollection = [System.Web.HttpUtility]::ParseQueryString([String]::Empty)
     foreach ($Item in ($Parameters.GetEnumerator())) {
@@ -78,22 +81,7 @@ function Get-CIPPAuditLogContentBundles {
 
     Write-Verbose "GET [ $($GraphQuery.ToString()) ]"
     $LogBundles = New-GraphGetRequest -uri $GraphQuery.ToString() -tenantid $TenantFilter -scope 'https://manage.office.com/.default' -IncludeResponseHeaders
-    $AuditLogContents = $LogBundles | Select-Object contentUri, contentCreated, @{Name = 'TenantFilter'; Expression = { $TenantFilter } }
+    $AuditLogContents = $LogBundles | Select-Object contentId, contentUri, contentCreated, contentExpiration, contentType, @{Name = 'TenantFilter'; Expression = { $TenantFilter } }, @{ Name = 'DefaultDomainName'; Expression = { $DefaultDomainName } }
 
-    if (!$ShowAll.IsPresent) {
-        $LastContent = ($AuditLogContents | Sort-Object contentCreated -Descending | Select-Object -First 1 -ExpandProperty contentCreated) | Get-Date
-        if ($WebhookConfig.LastContentCreated) {
-            $AuditLogContents = $AuditLogContents | Where-Object { ($_.contentCreated | Get-Date).ToLocalTime() -gt $StartTime }
-        }
-        if ($LastContent) {
-            if ($WebhookConfig.PSObject.Properties.Name -contains 'LastContentCreated') {
-                $WebhookConfig.LastContentCreated = [datetime]$LastContent
-            } else {
-                $WebhookConfig | Add-Member -MemberType NoteProperty -Name LastContentCreated -Value ''
-                $WebhookConfig.LastContentCreated = [datetime]$LastContent
-            }
-            $null = Add-CIPPAzDataTableEntity @WebhookTable -Entity $WebhookConfig -Force
-        }
-    }
     return $AuditLogContents
 }
